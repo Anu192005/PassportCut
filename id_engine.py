@@ -3,16 +3,36 @@ import io
 import re
 import json
 import zipfile
+import tempfile
 import urllib.request
 import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFont
 
 # ─── Constants ──────────────────────────────────────────────────────────────
-DATA_DIR    = os.path.join(os.getcwd(), "id_data")
-YUNET_PATH  = os.path.join(DATA_DIR, "face_detection_yunet_2023mar.onnx")
-YUNET_URL   = "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx"
-OUTPUT_DIR  = os.path.join(DATA_DIR, "passport_photos")
+# DATA_DIR: where the ONNX model lives (repo directory, read-only on cloud)
+DATA_DIR   = os.path.join(os.getcwd(), "id_data")
+YUNET_PATH = os.path.join(DATA_DIR, "face_detection_yunet_2023mar.onnx")
+YUNET_URL  = "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx"
+
+# OUTPUT_DIR: writable location for saved photos.
+# On Streamlit Cloud the repo is mounted read-only, so fall back to /tmp.
+def _resolve_output_dir() -> str:
+    candidate = os.path.join(DATA_DIR, "passport_photos")
+    try:
+        os.makedirs(candidate, exist_ok=True)
+        # Quick write-test
+        _probe = os.path.join(candidate, ".probe")
+        with open(_probe, "w") as _f:
+            _f.write("ok")
+        os.remove(_probe)
+        return candidate
+    except (OSError, PermissionError):
+        fallback = os.path.join(tempfile.gettempdir(), "passportcut", "passport_photos")
+        os.makedirs(fallback, exist_ok=True)
+        return fallback
+
+OUTPUT_DIR = _resolve_output_dir()
 
 # ─── Dimension Presets (label: (width_mm, height_mm)) ───────────────────────
 DIMENSION_PRESETS = {
@@ -35,7 +55,7 @@ _detector   = None
 
 # ─── Init ────────────────────────────────────────────────────────────────────
 def init():
-    os.makedirs(DATA_DIR,   exist_ok=True)
+    # DATA_DIR may be read-only on cloud; OUTPUT_DIR is already resolved above.
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     _download_model_if_missing(YUNET_PATH, YUNET_URL, "YuNet Face Detector")
 
@@ -53,6 +73,9 @@ def _download_model_if_missing(path, url, name):
 def get_detector():
     global _detector
     if _detector is None:
+        # backend_id / target_id removed: OpenCV 5.x's new graph engine does
+        # not support them for FaceDetectorYN and emits a WARN that breaks
+        # Streamlit Cloud logs.  Omitting the args lets OpenCV pick defaults.
         _detector = cv2.FaceDetectorYN.create(
             model=YUNET_PATH,
             config="",
@@ -60,8 +83,6 @@ def get_detector():
             score_threshold=0.5,
             nms_threshold=0.3,
             top_k=5000,
-            backend_id=cv2.dnn.DNN_BACKEND_OPENCV,
-            target_id=cv2.dnn.DNN_TARGET_CPU,
         )
     return _detector
 
