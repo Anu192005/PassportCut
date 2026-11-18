@@ -309,43 +309,78 @@ with st.container(border=True):
 
         if process_btn:
             st.session_state["faces"] = []
+            failed_files = []
             with st.spinner("Running face detection on all uploaded images…"):
                 code_counter = 1
                 for uf in all_uploaded:
-                    source_name = os.path.splitext(uf.name)[0]
-                    pil_img = Image.open(uf)
-                    # Store original PIL for raw-download mode
-                    pil_img.load()  # ensure fully loaded before storing
-                    faces = id_engine.detect_faces(pil_img)
+                    try:
+                        # ── seek(0) is critical: Streamlit UploadedFile
+                        # streams can be exhausted after the first read.
+                        # Always reset before opening.
+                        uf.seek(0)
+                        source_name = os.path.splitext(uf.name)[0]
+                        pil_img = Image.open(uf)
+                        pil_img.load()          # fully decode into memory now
+                        orig_copy = pil_img.copy()  # keep an un-cropped copy
+                        faces = id_engine.detect_faces(pil_img)
 
-                    for idx, face in enumerate(faces):
-                        raw_crop = face["face_crop_raw"]
-                        white_bg = (st.session_state["bg_color"] == "White")
-                        passport = id_engine.make_passport_photo(raw_crop, white_bg=white_bg)
+                        if not faces:
+                            # No face found — still add as a raw entry so the
+                            # user can download the original at target dimensions
+                            st.session_state["faces"].append({
+                                "source":       uf.name,
+                                "source_idx":   0,
+                                "confidence":   0.0,
+                                "raw_crop":     orig_copy,
+                                "original_pil": orig_copy,
+                                "passport":     id_engine.resize_to_dimensions(
+                                                    orig_copy, 35, 45, 200
+                                                ),
+                                "name":         source_name,   # exact filename
+                                "saved_path":   None,
+                            })
+                            code_counter += 1
+                            continue
 
-                        # Determine default name
-                        if st.session_state["naming_mode"] == "Code Name (auto)":
-                            default_name = f"FACE_{code_counter:03d}"
-                        elif st.session_state["naming_mode"] == "Filename as Name":
-                            suffix = f"_{idx+1}" if len(faces) > 1 else ""
-                            default_name = f"{source_name}{suffix}"
-                        else:
-                            suffix = f"_{idx+1}" if len(faces) > 1 else ""
-                            default_name = f"{source_name}{suffix}"
+                        for idx, face in enumerate(faces):
+                            raw_crop = face["face_crop_raw"]
+                            white_bg = (st.session_state["bg_color"] == "White")
+                            passport = id_engine.make_passport_photo(
+                                raw_crop, white_bg=white_bg
+                            )
 
-                        st.session_state["faces"].append({
-                            "source":       uf.name,
-                            "source_idx":   idx,
-                            "confidence":   face["confidence"],
-                            "raw_crop":     raw_crop,       # AI-cropped face region
-                            "original_pil": pil_img.copy(), # full original image
-                            "passport":     passport,       # 35×45 mm preview
-                            "name":         default_name,
-                            "saved_path":   None,
-                        })
-                        code_counter += 1
+                            # ── Name: always exact source filename, no suffix ──
+                            if st.session_state["naming_mode"] == "Code Name (auto)":
+                                default_name = f"FACE_{code_counter:03d}"
+                            else:
+                                default_name = source_name  # exact, unchanged
 
-            st.success(f"✅ Detected **{len(st.session_state['faces'])}** face(s) across **{len(all_uploaded)}** image(s).")
+                            st.session_state["faces"].append({
+                                "source":       uf.name,
+                                "source_idx":   idx,
+                                "confidence":   face["confidence"],
+                                "raw_crop":     raw_crop,
+                                "original_pil": orig_copy,
+                                "passport":     passport,
+                                "name":         default_name,
+                                "saved_path":   None,
+                            })
+                            code_counter += 1
+
+                    except Exception as _err:
+                        failed_files.append((uf.name, str(_err)))
+
+            total_faces  = len(st.session_state["faces"])
+            total_images = len(all_uploaded)
+            if total_faces:
+                st.success(
+                    f"✅ Detected faces in **{total_faces}** result(s) "
+                    f"across **{total_images}** image(s)."
+                )
+            else:
+                st.warning("No faces were detected in any uploaded image.")
+            for fname, err in failed_files:
+                st.error(f"❌ Could not process **{fname}**: {err}")
 
 
 # ─── Helper: build download image ────────────────────────────────────────────
@@ -547,9 +582,8 @@ if st.session_state["faces"]:
                         dl_bytes = _build_download_image(
                             face_data, dl_w_mm, dl_h_mm, dl_dpi, dl_crop
                         )
-                        dim_label  = f"{dl_w_mm}x{dl_h_mm}mm"
-                        mode_label = "crop" if dl_crop else "raw"
-                        dl_filename = f"{id_engine.sanitise(new_name)}_{dim_label}_{mode_label}.jpg"
+                        # Use the exact original uploaded filename — no suffixes
+                        dl_filename = face_data["source"]
                         st.download_button(
                             label=f"⬇️ Download ({dl_w_mm}×{dl_h_mm}mm)",
                             data=dl_bytes,
