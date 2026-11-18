@@ -84,6 +84,17 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
     font-weight: 600;
 }
 
+/* Download mode toggle pills */
+.mode-box {
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    font-size: 0.84rem;
+    color: #334155;
+}
+
 .stButton>button {
     background-color: #4f46e5;
     color: white;
@@ -110,7 +121,12 @@ def _ss(key, default):
 _ss("faces", [])           # list of dicts per detected face
 _ss("bg_color", "White")
 _ss("naming_mode", "Custom Name")
-_ss("output_folder", id_engine.OUTPUT_DIR)  # user-chosen save folder
+_ss("output_folder", id_engine.OUTPUT_DIR)
+_ss("dim_preset", list(id_engine.DIMENSION_PRESETS.keys())[0])  # default preset
+_ss("custom_w_mm", 22.0)
+_ss("custom_h_mm", 27.5)
+_ss("dl_dpi", 300)
+_ss("crop_filter", True)   # True = with face crop, False = raw image
 
 
 # ─── Sidebar ─────────────────────────────────────────────────────────────────
@@ -119,6 +135,7 @@ with st.sidebar:
     st.markdown('<p style="color:#475569;font-size:0.83rem;margin-top:0;">ID Photo Generator · OpenCV DNN</p>', unsafe_allow_html=True)
     st.markdown("---")
 
+    # ── Background & Naming ───────────────────────────────────────────────
     st.markdown("#### ⚙️ Output Settings")
     st.session_state["bg_color"] = st.selectbox(
         "Background Colour",
@@ -135,6 +152,80 @@ with st.sidebar:
             "Filename as Name: uses the source filename."
         )
     )
+    st.markdown("---")
+
+    # ── Download Dimension Settings ───────────────────────────────────────
+    st.markdown("#### 📐 Download Dimensions")
+
+    preset_keys = list(id_engine.DIMENSION_PRESETS.keys())
+    chosen_preset = st.selectbox(
+        "Size Preset",
+        preset_keys,
+        index=preset_keys.index(st.session_state["dim_preset"]),
+        help="Choose a standard size or select Custom to enter your own dimensions.",
+        key="dim_preset_select",
+    )
+    st.session_state["dim_preset"] = chosen_preset
+
+    preset_mm = id_engine.DIMENSION_PRESETS[chosen_preset]
+    if preset_mm is None:
+        # Custom dimensions
+        col_w, col_h = st.columns(2)
+        with col_w:
+            st.session_state["custom_w_mm"] = st.number_input(
+                "Width (mm)", min_value=5.0, max_value=200.0,
+                value=float(st.session_state["custom_w_mm"]), step=0.5, key="cw"
+            )
+        with col_h:
+            st.session_state["custom_h_mm"] = st.number_input(
+                "Height (mm)", min_value=5.0, max_value=200.0,
+                value=float(st.session_state["custom_h_mm"]), step=0.5, key="ch"
+            )
+        dl_w_mm = st.session_state["custom_w_mm"]
+        dl_h_mm = st.session_state["custom_h_mm"]
+    else:
+        dl_w_mm, dl_h_mm = preset_mm
+        st.markdown(
+            f'<div class="mode-box">📏 <b>{dl_w_mm} × {dl_h_mm} mm</b> → '
+            f'{id_engine.mm_to_px(dl_w_mm, st.session_state["dl_dpi"])} × '
+            f'{id_engine.mm_to_px(dl_h_mm, st.session_state["dl_dpi"])} px</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.session_state["dl_dpi"] = st.select_slider(
+        "Resolution (DPI)", options=[150, 200, 300, 400, 600],
+        value=st.session_state["dl_dpi"],
+        help="Higher DPI = larger file, better for printing.",
+    )
+
+    st.markdown("---")
+
+    # ── Crop Filter Toggle ────────────────────────────────────────────────
+    st.markdown("#### ✂️ Download Mode")
+    crop_on = st.toggle(
+        "Apply face-crop filter",
+        value=st.session_state["crop_filter"],
+        help=(
+            "ON  → Download uses the AI-cropped & framed passport photo.\n"
+            "OFF → Download resizes the original uploaded image to the chosen "
+            "dimensions without any cropping."
+        ),
+        key="crop_filter_toggle",
+    )
+    st.session_state["crop_filter"] = crop_on
+    if crop_on:
+        st.markdown(
+            '<div class="mode-box">✅ <b>With crop filter</b><br>'
+            '<span style="color:#64748b;font-size:0.78rem;">Face detected, framed & resized to target size</span></div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div class="mode-box">🖼️ <b>Raw – no crop filter</b><br>'
+            '<span style="color:#64748b;font-size:0.78rem;">Original image resized to target size only</span></div>',
+            unsafe_allow_html=True,
+        )
+
     st.markdown("---")
 
     saved = [f for f in st.session_state["faces"] if f.get("saved_path")]
@@ -163,7 +254,12 @@ with st.sidebar:
 
 # ─── Main Area ───────────────────────────────────────────────────────────────
 st.markdown('<div class="page-title">🪪 PassportCut</div>', unsafe_allow_html=True)
-st.markdown('<div class="page-subtitle">Upload individual photos or an entire folder — the system detects every face, generates standard passport-sized cutouts, lets you name them, and saves them to disk.</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="page-subtitle">Upload individual photos or an entire folder — the system detects every face, '
+    'generates standard passport-sized cutouts, lets you name them, and saves them to disk. '
+    'Choose your target dimensions and crop mode from the sidebar.</div>',
+    unsafe_allow_html=True,
+)
 
 # ─── Upload Section ───────────────────────────────────────────────────────────
 with st.container(border=True):
@@ -213,16 +309,13 @@ with st.container(border=True):
 
         if process_btn:
             st.session_state["faces"] = []
-            bg_map = {
-                "White": True,
-                "Light Blue": False,
-                "Light Grey": False,
-            }
             with st.spinner("Running face detection on all uploaded images…"):
                 code_counter = 1
                 for uf in all_uploaded:
                     source_name = os.path.splitext(uf.name)[0]
                     pil_img = Image.open(uf)
+                    # Store original PIL for raw-download mode
+                    pil_img.load()  # ensure fully loaded before storing
                     faces = id_engine.detect_faces(pil_img)
 
                     for idx, face in enumerate(faces):
@@ -241,25 +334,71 @@ with st.container(border=True):
                             default_name = f"{source_name}{suffix}"
 
                         st.session_state["faces"].append({
-                            "source": uf.name,
-                            "source_idx": idx,
-                            "confidence": face["confidence"],
-                            "raw_crop": raw_crop,
-                            "passport": passport,
-                            "name": default_name,
-                            "saved_path": None,
+                            "source":       uf.name,
+                            "source_idx":   idx,
+                            "confidence":   face["confidence"],
+                            "raw_crop":     raw_crop,       # AI-cropped face region
+                            "original_pil": pil_img.copy(), # full original image
+                            "passport":     passport,       # 35×45 mm preview
+                            "name":         default_name,
+                            "saved_path":   None,
                         })
                         code_counter += 1
 
             st.success(f"✅ Detected **{len(st.session_state['faces'])}** face(s) across **{len(all_uploaded)}** image(s).")
 
 
+# ─── Helper: build download image ────────────────────────────────────────────
+def _build_download_image(face_data: dict, w_mm: float, h_mm: float, dpi: int, crop: bool) -> bytes:
+    """Return JPEG bytes for the chosen dimension & crop mode."""
+    bg_white = (st.session_state["bg_color"] == "White")
+    bg_color  = (255, 255, 255) if bg_white else (173, 216, 230)
+
+    if crop:
+        # Use the AI-detected face crop, resized to target dimensions
+        img = id_engine.resize_to_dimensions(
+            face_data["raw_crop"], w_mm, h_mm, dpi, bg_color
+        )
+    else:
+        # Use the original un-cropped image, just resized
+        img = id_engine.resize_to_dimensions(
+            face_data["original_pil"], w_mm, h_mm, dpi, bg_color
+        )
+
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=95, dpi=(dpi, dpi))
+    return buf.getvalue()
+
+
 # ─── Results Gallery ──────────────────────────────────────────────────────────
 if st.session_state["faces"]:
     st.markdown("---")
 
+    # Resolve current download settings
+    preset_mm = id_engine.DIMENSION_PRESETS[st.session_state["dim_preset"]]
+    if preset_mm is None:
+        dl_w_mm = st.session_state["custom_w_mm"]
+        dl_h_mm = st.session_state["custom_h_mm"]
+    else:
+        dl_w_mm, dl_h_mm = preset_mm
+    dl_dpi  = st.session_state["dl_dpi"]
+    dl_crop = st.session_state["crop_filter"]
+
     with st.container(border=True):
         st.markdown(f"### 🖼️ Detected Faces — Passport Photo Gallery")
+
+        # ── Active download settings summary ──────────────────────────────
+        crop_label = "✂️ With face-crop filter" if dl_crop else "🖼️ Raw (no crop)"
+        st.markdown(
+            f'<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;'
+            f'padding:10px 16px;margin-bottom:12px;font-size:0.85rem;color:#334155;">'
+            f'<b>Download settings:</b>&nbsp;&nbsp;'
+            f'📐 <b>{dl_w_mm} × {dl_h_mm} mm</b> &nbsp;|&nbsp; '
+            f'🖨️ <b>{dl_dpi} DPI</b> &nbsp;|&nbsp; {crop_label}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
         st.markdown(
             "Review each face below. Edit the name, then click **Save** to write it to disk. "
             "Use **Save All** to batch-save everything at once."
@@ -329,7 +468,7 @@ if st.session_state["faces"]:
             count = 0
             for i, face_data in enumerate(st.session_state["faces"]):
                 if not face_data.get("saved_path"):
-                    raw_name = face_data["name"].strip() or f"FACE_{i+1:03d}"
+                    raw_name  = face_data["name"].strip() or f"FACE_{i+1:03d}"
                     safe_name = id_engine.sanitise(raw_name)
                     path = id_engine.save_passport_photo(face_data["passport"], safe_name, folder=save_folder)
                     st.session_state["faces"][i]["saved_path"] = path
@@ -345,7 +484,7 @@ if st.session_state["faces"]:
         # ── Grid: 4 cards per row ──────────────────────────────────────────
         NUM_COLS = 4
         faces = st.session_state["faces"]
-        rows = [faces[i:i+NUM_COLS] for i in range(0, len(faces), NUM_COLS)]
+        rows  = [faces[i:i+NUM_COLS] for i in range(0, len(faces), NUM_COLS)]
 
         for row in rows:
             cols = st.columns(NUM_COLS)
@@ -382,7 +521,6 @@ if st.session_state["faces"]:
                             f'<p style="text-align:center;"><span class="pill-saved">✅ Saved</span></p>',
                             unsafe_allow_html=True
                         )
-                        # Still let user re-save with updated name
                         if st.button("Re-save", key=f"resave_{global_idx}", use_container_width=True):
                             safe_name = id_engine.sanitise(new_name.strip() or f"FACE_{global_idx+1:03d}")
                             sf = st.session_state["output_folder"]
@@ -404,17 +542,28 @@ if st.session_state["faces"]:
                             st.success(f"Saved -> {os.path.basename(path)}")
                             st.rerun()
 
-                    # ── Individual download ─────────────────────────────
-                    buf = io.BytesIO()
-                    face_data["passport"].save(buf, "JPEG", quality=95)
-                    st.download_button(
-                        label="⬇️ Download",
-                        data=buf.getvalue(),
-                        file_name=f"{id_engine.sanitise(new_name)}.jpg",
-                        mime="image/jpeg",
-                        key=f"dl_{global_idx}",
-                        use_container_width=True,
-                    )
+                    # ── Individual download (uses chosen dimensions & mode) ──
+                    try:
+                        dl_bytes = _build_download_image(
+                            face_data, dl_w_mm, dl_h_mm, dl_dpi, dl_crop
+                        )
+                        dim_label  = f"{dl_w_mm}x{dl_h_mm}mm"
+                        mode_label = "crop" if dl_crop else "raw"
+                        dl_filename = f"{id_engine.sanitise(new_name)}_{dim_label}_{mode_label}.jpg"
+                        st.download_button(
+                            label=f"⬇️ Download ({dl_w_mm}×{dl_h_mm}mm)",
+                            data=dl_bytes,
+                            file_name=dl_filename,
+                            mime="image/jpeg",
+                            key=f"dl_{global_idx}",
+                            use_container_width=True,
+                            help=(
+                                f"{'AI-cropped face' if dl_crop else 'Original image'} "
+                                f"resized to {dl_w_mm}×{dl_h_mm} mm at {dl_dpi} DPI"
+                            ),
+                        )
+                    except Exception as e:
+                        st.warning(f"Download error: {e}")
 
     # ── Output folder path info ────────────────────────────────────────────
     st.info(f"📂 All passport photos are saved to: `{st.session_state['output_folder']}`")

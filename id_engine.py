@@ -14,10 +14,21 @@ YUNET_PATH  = os.path.join(DATA_DIR, "face_detection_yunet_2023mar.onnx")
 YUNET_URL   = "https://huggingface.co/opencv/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx"
 OUTPUT_DIR  = os.path.join(DATA_DIR, "passport_photos")
 
-# Passport photo specification: 35mm x 45mm at 200 dpi
-# 35mm  -> 35/25.4 * 200 = ~276 px   45mm -> 45/25.4 * 200 = ~354 px
-PASSPORT_W  = 276
-PASSPORT_H  = 354
+# ─── Dimension Presets (label: (width_mm, height_mm)) ───────────────────────
+DIMENSION_PRESETS = {
+    "22 × 27.5 mm  (Indian Passport – small)": (22,   27.5),
+    "35 × 45 mm    (Standard Passport / UK / EU)": (35,   45),
+    "51 × 51 mm    (US Visa / 2×2 inch)":       (51,   51),
+    "40 × 60 mm    (Indian Passport – large)":   (40,   60),
+    "30 × 40 mm    (Schengen Visa)":             (30,   40),
+    "35 × 35 mm    (Australian Passport)":       (35,   35),
+    "Custom":                                    None,
+}
+
+# Default passport photo spec: 35mm x 45mm at 200 dpi
+PASSPORT_W  = 276   # 35mm @ 200 dpi
+PASSPORT_H  = 354   # 45mm @ 200 dpi
+DEFAULT_DPI = 200
 
 _detector   = None
 
@@ -99,33 +110,72 @@ def detect_faces(pil_img: Image.Image):
     return results
 
 
+# ─── Dimension helper ────────────────────────────────────────────────────────
+def mm_to_px(mm: float, dpi: int = DEFAULT_DPI) -> int:
+    """Convert millimetres to pixels at the given DPI."""
+    return max(1, round(mm / 25.4 * dpi))
+
+
+def resize_to_dimensions(
+    img: Image.Image,
+    width_mm: float,
+    height_mm: float,
+    dpi: int = DEFAULT_DPI,
+    bg_color: tuple = (255, 255, 255),
+) -> Image.Image:
+    """
+    Resize *img* to exactly (width_mm x height_mm) at *dpi*.
+    The image is letterbox-fitted (aspect ratio preserved) onto a
+    solid-colour canvas of the target size.
+    """
+    target_w = mm_to_px(width_mm, dpi)
+    target_h = mm_to_px(height_mm, dpi)
+
+    orig_w, orig_h = img.size
+    if orig_w == 0 or orig_h == 0:
+        return Image.new("RGB", (target_w, target_h), bg_color)
+
+    scale  = min(target_w / orig_w, target_h / orig_h)
+    new_w  = int(orig_w * scale)
+    new_h  = int(orig_h * scale)
+    resized = img.resize((new_w, new_h), Image.LANCZOS)
+
+    canvas = Image.new("RGB", (target_w, target_h), bg_color)
+    paste_x = (target_w - new_w) // 2
+    paste_y = (target_h - new_h) // 2
+    canvas.paste(resized, (paste_x, paste_y))
+    return canvas
+
 
 # ─── Passport photo creation ──────────────────────────────────────────────────
-def make_passport_photo(face_pil: Image.Image, white_bg: bool = True) -> Image.Image:
+def make_passport_photo(
+    face_pil: Image.Image,
+    white_bg: bool = True,
+    width_mm: float = 35,
+    height_mm: float = 45,
+    dpi: int = DEFAULT_DPI,
+) -> Image.Image:
     """
-    Resize the expanded shoulder-crop to fill the standard passport canvas
-    (276 x 354 px at 200 dpi = 35mm x 45mm).
+    Resize the expanded shoulder-crop to fill the given canvas size.
     The crop already contains hair + neck + shoulders from detect_faces().
     We letterbox-fit it to the canvas so nothing is cropped out.
     """
-    orig_w, orig_h = face_pil.size
-
-    # Scale to fill the full passport canvas (letterbox – fit inside)
-    scale = min(PASSPORT_W / orig_w, PASSPORT_H / orig_h) if orig_w > 0 and orig_h > 0 else 1.0
-    new_w = int(orig_w * scale)
-    new_h = int(orig_h * scale)
-    face_resized = face_pil.resize((new_w, new_h), Image.LANCZOS)
-
-    # Create canvas with chosen background
     bg_color = (255, 255, 255) if white_bg else (173, 216, 230)
-    canvas = Image.new("RGB", (PASSPORT_W, PASSPORT_H), bg_color)
+    return resize_to_dimensions(face_pil, width_mm, height_mm, dpi, bg_color)
 
-    # Centre the resized crop on the canvas
-    paste_x = (PASSPORT_W - new_w) // 2
-    paste_y = (PASSPORT_H - new_h) // 2
 
-    canvas.paste(face_resized, (paste_x, paste_y))
-    return canvas
+def make_raw_photo(
+    original_pil: Image.Image,
+    width_mm: float,
+    height_mm: float,
+    dpi: int = DEFAULT_DPI,
+    bg_color: tuple = (255, 255, 255),
+) -> Image.Image:
+    """
+    Resize the *original* (un-cropped) image to the requested dimensions
+    without any face-detection cropping applied.
+    """
+    return resize_to_dimensions(original_pil, width_mm, height_mm, dpi, bg_color)
 
 
 # ─── Save passport photo ─────────────────────────────────────────────────────
@@ -138,7 +188,6 @@ def save_passport_photo(passport_img: Image.Image, filename: str, folder: str = 
     dest = os.path.join(dest_dir, filename)
     passport_img.save(dest, "JPEG", quality=95)
     return dest
-
 
 
 # ─── Bulk ZIP helper ─────────────────────────────────────────────────────────
